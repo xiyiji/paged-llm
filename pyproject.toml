@@ -1,0 +1,24 @@
+[project]
+name = "pagedllm"
+version = "0.1.0"
+description = "A small LLM inference engine with a real paged-attention kernel: block manager, continuous batching, prefix caching, Triton kernel."
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.3",
+    "numpy",
+    "transformers>=4.44",
+    "safetensors",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+gpu = ["triton>=3.0"]
+flash = ["flash-attn>=2.6"]
+bench = ["vllm", "pynvml", "tqdm"]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["pagedllm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
