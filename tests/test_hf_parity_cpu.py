@@ -62,3 +62,12 @@ def test_loader_rejects_non_llama(tmp_path):
     (tmp_path / "x" / "config.json").write_text('{"architectures": ["GPT2LMHeadModel"]}')
     with pytest.raises(ValueError):
         load_hf_config(str(tmp_path / "x"))
+
+
+def test_profiling_forward_exceeding_rope_table_does_not_crash(tmp_path, tokenizer):
+    """Regression: startup profiling ran max_num_batched_tokens positions through a RoPE table
+    sized by the checkpoint (TinyLlama: 2048) -> out-of-bounds gather on GPU."""
+    path, _ = build_checkpoint(tmp_path, tokenizer)  # max_position_embeddings=512
+    engine = LLMEngine(path, EngineConfig(device="cpu", attention_backend="torch", num_gpu_blocks=64, block_size=8,
+                                          max_num_batched_tokens=1024, max_model_len=256, dtype="float32"))
+    engine._dummy_forward(1024)

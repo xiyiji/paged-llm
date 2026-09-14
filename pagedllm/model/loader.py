@@ -36,9 +36,12 @@ def resolve_dtype(requested: str, cfg: dict) -> torch.dtype:
     return {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[requested]
 
 
-def load_model(path: str, attn_fn, device: torch.device, dtype: torch.dtype) -> LlamaForCausalLM:
+def load_model(path: str, attn_fn, device: torch.device, dtype: torch.dtype, max_positions: int | None = None) -> LlamaForCausalLM:
     hf_cfg = load_hf_config(path)
     cfg = LlamaConfig.from_hf(hf_cfg)
+    if max_positions is not None:
+        # Size the RoPE table for the engine's max_model_len, not just the checkpoint default.
+        cfg.max_position_embeddings = max(cfg.max_position_embeddings, max_positions)
     with torch.device(device):
         torch.set_default_dtype(dtype)
         try:

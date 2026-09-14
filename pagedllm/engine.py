@@ -118,7 +118,7 @@ class LLMEngine:
         self.attention_backend = attn_fn.__name__
 
         t0 = time.perf_counter()
-        self.model = load_model(path, attn_fn, self.device, self.dtype)
+        self.model = load_model(path, attn_fn, self.device, self.dtype, max_positions=cfg.max_model_len)
         mc = self.model.config
         log.info("loaded %s in %.1fs (dtype=%s, attn=%s)", model, time.perf_counter() - t0, self.dtype, self.attention_backend)
 
@@ -138,17 +138,14 @@ class LLMEngine:
         mc = self.model.config
         return KVCache.block_bytes(mc.num_hidden_layers, self.config.block_size, mc.num_key_value_heads, mc.head_dim, self.dtype)
 
-    def _profile_num_blocks(self) -> int:
-        """Like vLLM: run one max-size forward to measure activation peak, give the rest to KV."""
+    def _dummy_forward(self, n_tok: int) -> None:
+        """One forward of n_tok tokens against a throwaway cache (startup memory profiling)."""
         cfg = self.config
-        if self.device.type != "cuda":
-            return max(64, cfg.max_model_len * 4 // cfg.block_size)
         mc = self.model.config
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(self.device)
-        n_tok = cfg.max_num_batched_tokens
         tmp_blocks = (n_tok + cfg.block_size - 1) // cfg.block_size
         tmp_cache = KVCache(mc.num_hidden_layers, tmp_blocks, cfg.block_size, mc.num_key_value_heads, mc.head_dim, self.dtype, self.device)
+        # Positions must stay inside the RoPE table; the values do not matter for profiling.
+        positions = torch.arange(n_tok, device=self.device) % mc.max_position_embeddings
         meta = AttentionMetadata(
             slot_mapping=torch.arange(n_tok, device=self.device),
             block_tables=torch.arange(tmp_blocks, dtype=torch.int32, device=self.device)[None, :],
@@ -157,13 +154,21 @@ class LLMEngine:
             max_q_len=n_tok,
         )
         with torch.no_grad():
-            self.model(torch.zeros(n_tok, dtype=torch.int64, device=self.device),
-                       torch.arange(n_tok, device=self.device), tmp_cache, meta,
+            self.model(torch.zeros(n_tok, dtype=torch.int64, device=self.device), positions, tmp_cache, meta,
                        torch.arange(min(n_tok, cfg.max_num_seqs), device=self.device))
+        return tmp_blocks
+
+    def _profile_num_blocks(self) -> int:
+        """Like vLLM: run one max-size forward to measure activation peak, give the rest to KV."""
+        cfg = self.config
+        if self.device.type != "cuda":
+            return max(64, cfg.max_model_len * 4 // cfg.block_size)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(self.device)
+        tmp_blocks = self._dummy_forward(cfg.max_num_batched_tokens)
         torch.cuda.synchronize()
         peak = torch.cuda.max_memory_allocated(self.device)
         tmp_bytes = tmp_blocks * self._block_bytes()
-        del tmp_cache, meta
         torch.cuda.empty_cache()
         free, total = torch.cuda.mem_get_info(self.device)
         used_by_others = total - free - torch.cuda.memory_allocated(self.device)
