@@ -72,10 +72,54 @@ bash benchmarks/run_all.sh && cat benchmarks/results/latest.md
 Workload: 64 random prompts × 256 input tokens, greedy decode of exactly 128 tokens, identical
 token ids for all backends; peak memory sampled through NVML so vLLM's preallocation is visible.
 
-**Results: not yet measured.** The tables in `benchmarks/results/` are produced by the scripts
-above; this repository was developed on a Mac and the GPU paths (Triton kernel, TinyLlama parity
-test, benchmark sweep) have not been executed yet. Treat the kernel as untested until
-`tests/test_triton_kernel.py` passes on real hardware.
+### Results (RTX 4090, TinyLlama-1.1B-Chat fp16, 64 requests, greedy, EOS ignored)
+
+Output tokens/s, counting only each request's target tokens. Full tables with memory
+columns: [`benchmarks/results/latest.md`](benchmarks/results/latest.md); raw records in the
+`.jsonl` next to it.
+
+**Equal lengths** (256 in / 128 out — the best case for static batching):
+
+| batch | HF `generate` | pagedllm | vLLM 0.29 |
+|---:|---:|---:|---:|
+| 1 | 146 | 135 | 357 |
+| 8 | 1026 | 1015 | 2238 |
+| 32 | 3370 | 3467 | 6128 |
+| 64 | 5388 | 5827 | 8126 |
+
+**Ragged lengths** (input 64–256, output 32–128, random order — where static batching pads to
+the longest prompt and keeps decoding until the longest output finishes):
+
+| batch | HF `generate` | pagedllm | vLLM 0.29 |
+|---:|---:|---:|---:|
+| 32 | 1835 (53% wasted decode steps) | 2691 | 4556 |
+| 64 | 2096 (55% wasted decode steps) | 4210 | 6063 |
+
+**75% shared prefix**, batch 32: pagedllm 3744 (48 prefix-cache hits, vs 3467 without sharing),
+vLLM 7292.
+
+**Kernel micro-benchmark** (Llama-3-8B attention shape: 32 heads / 8 KV heads / head_dim 128,
+fp16, block 16; microseconds): [`benchmarks/results/kernel.md`](benchmarks/results/kernel.md).
+Prefill of 2048 tokens: Triton 526 µs vs PyTorch gather-then-attend reference 6568 µs.
+Decode batch 8 × 512 context: 50 µs vs 1350 µs. Decode batch 1 × 8192 context: 445 µs vs 931 µs.
+
+How to read this honestly:
+
+* **vs HF generate**: on equal lengths the two are within ±8% — there is nothing for continuous
+  batching to win there. On ragged lengths pagedllm is 1.5× (batch 32) to 2.0× (batch 64) faster
+  because HF spends over half of its decode steps on rows that are already finished.
+* **vs vLLM**: pagedllm reaches 46–72% of vLLM's throughput. The gap has three known causes,
+  in order: no CUDA graphs (at batch 1 vLLM is 2.6× faster purely from launch overhead; our step
+  is dozens of small Python-launched kernels), a decode kernel that pads each 1-token query to a
+  16-row tile and does not split long contexts across SMs (see the kernel table: at batch 1 ×
+  8192 the reference is only 2× slower), and no fused RMSNorm / RoPE / SiLU kernels. Note vLLM
+  ran from a separate environment (torch 2.13, CUDA graphs on); pagedllm and HF ran on torch 2.8.
+* **Memory**: paged engines pre-allocate their KV pool, so "peak memory" is not comparable to
+  HF; the meaningful number is capacity (818k tokens on a 4090 for this model) and zero
+  preemptions across every run.
+
+Reproduce: `bash scripts/gpu_run.sh` on a CUDA box (needs `VLLM_PYTHON` pointing at an
+interpreter with vLLM if it is not in the same environment).
 
 ## Design notes worth knowing before an interview
 
@@ -100,5 +144,6 @@ test, benchmark sweep) have not been executed yet. Treat the kernel as untested 
 
 ## Not done (on purpose)
 
-CUDA graphs, split-K decode kernel, swap-based preemption, speculative decoding, quantised KV,
-tensor parallelism, an OpenAI-compatible server. Each is a self-contained follow-up.
+CUDA graphs and a split-K decode kernel (the two items the benchmark says matter most),
+swap-based preemption, speculative decoding, quantised KV, tensor parallelism, an
+OpenAI-compatible server. Each is a self-contained follow-up.

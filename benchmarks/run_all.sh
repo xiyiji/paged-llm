@@ -11,7 +11,7 @@ EXTRA=${EXTRA:-}
 PY=${PYTHON:-python}
 VPY=${VLLM_PYTHON:-$PY}
 BACKENDS=${BACKENDS:-hf pagedllm vllm}
-BATCHES=${BATCHES:-1 8 32 64}
+BATCHES=${BATCHES-1 8 32 64}   # BATCHES="" skips the equal-length sweep
 cd "$(dirname "$0")/.."
 mkdir -p benchmarks/results
 py_for() { [ "$1" = vllm ] && echo "$VPY" || echo "$PY"; }
