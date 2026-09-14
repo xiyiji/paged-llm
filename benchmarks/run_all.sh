@@ -22,6 +22,13 @@ for bs in $BATCHES; do
     run_one "$backend" --model "$MODEL" --batch-size $bs --num-prompts $NUM --input-len $INPUT --output-len $OUTPUT $EXTRA
   done
 done
+# Ragged workload: random input/output lengths (where static batching pads and waits).
+for bs in 32 64; do
+  for backend in $BACKENDS; do
+    echo "=== $backend batch=$bs var-len ==="
+    run_one "$backend" --model "$MODEL" --batch-size $bs --num-prompts $NUM --input-len $INPUT --output-len $OUTPUT --var-len $EXTRA
+  done
+done
 # Prefix-caching scenario: 75% shared prefix.
 for backend in $BACKENDS; do
   [ "$backend" = hf ] && continue
